@@ -1,0 +1,77 @@
+# Subreddits that mo_buzz monitors for new, product-relevant posts.
+#
+# Names are bare (no "r/" prefix) because the Reddit API / PRAW addresses
+# subreddits by name, e.g. reddit.subreddit("LLMDevs").
+# Edit this list freely — the daily Modal cron job reads it on every run.
+
+subreddits:
+  # --- AI / LLM / ML ---
+  - LLMDevs
+  - datascience
+  - MachineLearning
+  - PromptEngineering
+  - singularity
+  - ArtificialIntelligence
+  - aipromptprogramming
+  - AI_Agents
+  - LangChain
+  - agentdevelopmentkit
+  - deeplearning
+  - technology
+  - LocalLLaMa
+  - GeminiAI
+  - science
+  - ChatGPTPromptGenius
+  - Bard
+  - BetterOffline
+  - Futurology
+  - ArtificialSentience
+  - DailyTechNewsShow
+  - LocalLLM
+  - ChatGPT
+  - semanticweb
+  - perplexity_ai
+  - Rag
+  - AgentsOfAI
+  - LLM
+  - ClaudeAI
+  - MLQuestions
+  - AIAssisted
+
+  # --- Marketing / GTM / Sales ---
+  - MarketingAutomation
+  - DigitalMarketing
+  - digital_marketing
+  - AskMarketing
+  - aimarketing
+  - artificial
+  - b2bmarketing
+  - gtmengineering
+  - ProductMarketing
+  - SaaS
+  - Entrepeneurs
+  - Marketresearch
+  - UseApollolo
+  - GrowthHacking
+  - n8n
+  - AI_Sales
+  - SalesOperations
+  - startups
+  - buildinpublic
+  - automation
+  - EntrepreneuerRideAlong
+  - IndianEntrepreneur
+  - smallbusiness
+  - consulting
+  - techsales
+  - indianstartups
+  - CRM
+  - founder
+  - AIAgentsInAction
+  - AIAutomations
+  - Automate
+  - ExperiencedDevs
+  - mlops
+  - advancedentrepreneur
+  - quant
+  - aiagents
