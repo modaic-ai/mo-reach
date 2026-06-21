@@ -17,6 +17,7 @@ import json
 import logging
 from urllib.parse import parse_qs
 
+from fastapi import BackgroundTasks, FastAPI, Request, Response
 from modaic_client import Arbiter
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
@@ -26,10 +27,10 @@ from config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Buttons let a human assert the *correct* action for the post.
-ACTION_BUTTONS = [
-    ("respond", "✅ respond", "primary"),
-    ("ignore", "🚫 ignore", "danger"),
+# Buttons let a human assert the *correct* relevance for the post.
+RELEVANCE_BUTTONS = [
+    ("relevant", "✅ Relevant", "primary"),
+    ("not_relevant", "🚫 Not relevant", "danger"),
 ]
 ANNOTATE_ACTION_PREFIX = "annotate_"
 ANNOTATION_MODAL_CALLBACK = "annotation_submit"
@@ -38,6 +39,10 @@ ANNOTATION_MODAL_CALLBACK = "annotation_submit"
 def _truncate(text: str, limit: int) -> str:
     text = (text or "").strip()
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _fmt_conf(c: float | None) -> str:
+    return f"{round(c * 100)}% confidence" if c is not None else "confidence n/a"
 
 
 # --------------------------------------------------------------------------- #
@@ -64,7 +69,7 @@ def build_message_blocks(jp: JudgedPost) -> list[dict]:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*Arbiter:* `{jp.action}`\n*Why it's relevant:* {_truncate(jp.reasoning, 1200)}",
+                "text": f"*Arbiter:* `{jp.relevance}` · {_fmt_conf(jp.confidence)}\n*Why it's relevant:* {_truncate(jp.reasoning, 1200)}",
             },
         },
         {
@@ -97,7 +102,7 @@ def build_message_blocks(jp: JudgedPost) -> list[dict]:
                         "value": jp.example_id,
                         **({"style": style} if style else {}),
                     }
-                    for value, label, style in ACTION_BUTTONS
+                    for value, label, style in RELEVANCE_BUTTONS
                 ],
             }
         )
@@ -152,9 +157,36 @@ def _annotation_modal(example_id: str, ground_truth: str, channel_id: str, messa
     }
 
 
-def build_fastapi_app():
-    from fastapi import FastAPI, Request, Response
+def _annotate_and_reply(arbiter, slack, meta: dict, reasoning: str, user_id: str) -> None:
+    """Slow path, run in the background so Slack gets an instant ack.
 
+    Starlette runs this after the response is sent but before the ASGI request
+    completes, so Modal keeps the container processing until it finishes.
+    """
+    try:
+        arbiter.annotate_example(
+            meta["example_id"], ground_truth=meta["ground_truth"], ground_reasoning=reasoning
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to annotate example %s", meta.get("example_id"))
+    try:
+        slack.chat_postMessage(
+            channel=meta["channel_id"],
+            thread_ts=meta["message_ts"],
+            text=f"Annotated as `{meta['ground_truth']}` by <@{user_id}> — {reasoning}",
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to post annotation reply")
+
+
+def _open_modal(slack, trigger_id: str, view: dict) -> None:
+    try:
+        slack.views_open(trigger_id=trigger_id, view=view)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to open annotation modal")
+
+
+def build_fastapi_app():
     settings = get_settings()
     verifier = SignatureVerifier(signing_secret=settings.slack_signing_secret)
     slack = WebClient(token=settings.slack_bot_token)
@@ -167,7 +199,7 @@ def build_fastapi_app():
         return {"ok": True}
 
     @web.post("/slack/interactions")
-    async def interactions(request: Request):
+    async def interactions(request: Request, background_tasks: BackgroundTasks):
         raw = await request.body()
         if not verifier.is_valid_request(raw, dict(request.headers)):
             return Response(status_code=403)
@@ -182,18 +214,15 @@ def build_fastapi_app():
             action_id = action.get("action_id", "")
             if action_id.startswith(ANNOTATE_ACTION_PREFIX):
                 ground_truth = action_id[len(ANNOTATE_ACTION_PREFIX) :]
-                try:
-                    slack.views_open(
-                        trigger_id=payload["trigger_id"],
-                        view=_annotation_modal(
-                            example_id=action["value"],
-                            ground_truth=ground_truth,
-                            channel_id=payload["channel"]["id"],
-                            message_ts=payload["message"]["ts"],
-                        ),
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception("Failed to open annotation modal")
+                view = _annotation_modal(
+                    example_id=action["value"],
+                    ground_truth=ground_truth,
+                    channel_id=payload["channel"]["id"],
+                    message_ts=payload["message"]["ts"],
+                )
+                # Defer views.open so we ack Slack instantly; it still fires within
+                # the trigger_id's 3s validity (the task runs right after we respond).
+                background_tasks.add_task(_open_modal, slack, payload["trigger_id"], view)
             return Response(status_code=200)
 
         # 2) Modal submitted -> annotate on Modaic + reply in-thread.
@@ -203,27 +232,23 @@ def build_fastapi_app():
                 payload["view"]["state"]["values"]["reasoning"]["reasoning_input"].get("value") or ""
             )
             user_id = payload["user"]["id"]
-
-            try:
-                arbiter.annotate_example(
-                    meta["example_id"],
-                    ground_truth=meta["ground_truth"],
-                    ground_reasoning=reasoning,
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception("Failed to annotate example %s", meta.get("example_id"))
-
-            try:
-                slack.chat_postMessage(
-                    channel=meta["channel_id"],
-                    thread_ts=meta["message_ts"],
-                    text=f"Annotated as `{meta['ground_truth']}` by <@{user_id}> — {reasoning}",
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception("Failed to post annotation reply")
-
+            # Defer the Modaic write + Slack reply so the modal closes well within
+            # Slack's 3s deadline; Starlette runs it after sending this response.
+            background_tasks.add_task(_annotate_and_reply, arbiter, slack, meta, reasoning, user_id)
             return Response(content=json.dumps({"response_action": "clear"}), media_type="application/json")
 
         return Response(status_code=200)
+
+    @web.post("/slack/commands")
+    async def commands(request: Request):
+        raw = await request.body()
+        if not verifier.is_valid_request(raw, dict(request.headers)):
+            return Response(status_code=403)
+        import policy
+
+        form = parse_qs(raw.decode())
+        text = form.get("text", [""])[0]
+        command = form.get("command", ["/mobuzz"])[0]
+        return {"response_type": "ephemeral", "text": policy.apply_command(text, command=command)}
 
     return web

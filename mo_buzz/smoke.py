@@ -1,9 +1,11 @@
 """Local smoke tests for mo_buzz — run one layer at a time, cheapest first.
 
 Usage:
+    uv run python smoke.py rss [subreddit ...]      # no creds needed (public feeds)
     uv run python smoke.py reddit [subreddit ...]   # needs REDDIT_* only
     uv run python smoke.py arbiter                   # needs MODAIC_* (arbiter must be pushed)
     uv run python smoke.py slack [example_id]        # needs SLACK_BOT_TOKEN + SLACK_CHANNEL_ID
+    uv run python smoke.py policy [show|set ...]      # view/tune the surfacing policy
     uv run python smoke.py pipeline                  # how to run the full Modal job
 
 Load your env first, e.g.:  set -a; source .env; set +a
@@ -20,10 +22,42 @@ SAMPLE = {
 }
 
 
+def _load_dotenv(filename: str = ".env") -> None:
+    """Load KEY=VALUE lines from a sibling .env into os.environ (real env wins)."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    if not os.path.exists(path):
+        return
+    with open(path) as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key, val = key.strip(), val.strip()
+            if val.startswith("#"):
+                val = ""  # leftover placeholder comment, not a real value
+            elif len(val) >= 2 and val[0] in "\"'" and val[-1] == val[0]:
+                val = val[1:-1]  # fully quoted value
+            else:
+                val = val.split(" #", 1)[0].rstrip().strip("\"'")  # drop inline comment + stray quotes
+            os.environ.setdefault(key, val)
+
+
 def _require(*names: str) -> None:
     missing = [n for n in names if not os.environ.get(n)]
     if missing:
         sys.exit(f"Missing env vars: {', '.join(missing)} (see .env.example)")
+
+
+def cmd_rss(args: list[str]) -> None:
+    # No credentials required — public Atom feeds.
+    from reddit_rss import fetch_new_posts_rss
+
+    subs = args or ["LLMDevs", "LocalLLaMA"]
+    posts = fetch_new_posts_rss(subs, lookback_hours=48, limit_per_sub=10)
+    print(f"Fetched {len(posts)} posts via RSS from {subs}")
+    for p in posts[:10]:
+        print(f"  r/{p.subreddit}  {p.title[:70]!r}  {p.url}")
 
 
 def cmd_reddit(args: list[str]) -> None:
@@ -50,22 +84,25 @@ def cmd_arbiter(args: list[str]) -> None:
     arbiter = Arbiter(repo)
 
     print(f"Single predict against {repo} ...")
-    pred = arbiter(**SAMPLE)
-    print("  action     =", pred.output.action)
+    pred = arbiter(**SAMPLE, compute_confidence=True)
+    print("  relevance  =", pred.output.relevance)
+    print("  confidence =", pred.confidence)
     print("  reasoning  =", pred.reasoning)
     print("  example_id =", pred.example_id, "  <- reuse this for `smoke.py slack`")
 
-    print("\nBatch predict_all (2 examples) ...")
+    print("\nBatch predict_all (2 examples, with confidence) ...")
     results = arbiter.predict_all(
         examples=[
             {"input": SAMPLE},
             {"input": {**SAMPLE, "title": "Best AI meme of the day", "body": "lol"}},
         ],
-        wait_for="predictions",
+        compute_confidence=True,
+        wait_for="scores",
         show_progress=False,
     )
     for row in results:
-        print("  ", row.example_id, "->", row.predictions[0].output.action)
+        p = row.predictions[0]
+        print("  ", row.example_id, "->", p.output.relevance, f"(confidence {p.confidence})")
 
 
 def cmd_slack(args: list[str]) -> None:
@@ -93,8 +130,9 @@ def cmd_slack(args: list[str]) -> None:
             author="smoke_user",
             created_utc=0.0,
         ),
-        action="respond",
+        relevance="relevant",
         reasoning="Asking about LLM-as-a-judge + calibrated confidence — core Modaic use case.",
+        confidence=0.87,
         example_id=example_id,
         prediction_id=None,
     )
@@ -106,6 +144,14 @@ def cmd_slack(args: list[str]) -> None:
     print("Posted to channel", os.environ["SLACK_CHANNEL_ID"])
 
 
+def cmd_policy(args: list[str]) -> None:
+    # Show or tune the surfacing policy. `set`/`reset` write to the shared
+    # modal.Dict, so they affect the deployed cron too (needs Modal auth).
+    import policy
+
+    print(policy.apply_command(" ".join(args)))
+
+
 def cmd_pipeline(args: list[str]) -> None:
     print("Run the full pipeline in Modal (needs the `mo-buzz` secret to exist):")
     print("    uv run modal run app.py        # triggers daily_scan once")
@@ -115,14 +161,17 @@ def cmd_pipeline(args: list[str]) -> None:
 
 
 COMMANDS = {
+    "rss": cmd_rss,
     "reddit": cmd_reddit,
     "arbiter": cmd_arbiter,
     "slack": cmd_slack,
+    "policy": cmd_policy,
     "pipeline": cmd_pipeline,
 }
 
 
 def main() -> None:
+    _load_dotenv()
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         sys.exit(f"Usage: python smoke.py [{'|'.join(COMMANDS)}] [args...]")
     COMMANDS[sys.argv[1]](sys.argv[2:])

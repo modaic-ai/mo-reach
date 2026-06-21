@@ -28,6 +28,7 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .uv_pip_install(
         "praw>=7.7",
+        "feedparser>=6.0",
         "pyyaml>=6",
         # Lightweight client only (no dspy/litellm) -> fast cold start for the
         # latency-sensitive Slack endpoint. Bump to match your hub version.
@@ -37,7 +38,10 @@ image = (
         "fastapi>=0.115",
     )
     .add_local_file("subreddits.yaml", "/root/subreddits.yaml")
-    .add_local_python_source("config", "reddit_client", "arbiter_judge", "slack_app")
+    .add_local_file("surfacing.json", "/root/surfacing.json")
+    .add_local_python_source(
+        "config", "reddit_client", "reddit_rss", "arbiter_judge", "slack_app", "policy"
+    )
 )
 
 # One Modal secret holds every env var; see .env.example for the keys.
@@ -61,20 +65,32 @@ def load_subreddits(path: str = "/root/subreddits.yaml") -> list[str]:
 def daily_scan() -> dict:
     from arbiter_judge import judge_posts
     from config import get_settings
-    from reddit_client import fetch_new_posts, make_reddit
     from slack_app import post_flagged
 
     settings = get_settings()
     subreddits = load_subreddits()
-    reddit = make_reddit(
-        settings.reddit_client_id,
-        settings.reddit_client_secret,
-        settings.reddit_user_agent,
-    )
 
-    posts = fetch_new_posts(
-        reddit, subreddits, settings.lookback_hours, settings.posts_per_subreddit
-    )
+    if settings.reddit_source == "rss":
+        from reddit_rss import fetch_new_posts_rss
+
+        posts = fetch_new_posts_rss(
+            subreddits, settings.lookback_hours, settings.posts_per_subreddit, settings.reddit_user_agent
+        )
+    else:
+        from reddit_client import fetch_new_posts, make_reddit
+
+        if not (settings.reddit_client_id and settings.reddit_client_secret):
+            raise RuntimeError(
+                "REDDIT_SOURCE=api requires REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET "
+                "(or set REDDIT_SOURCE=rss to use public feeds)."
+            )
+        reddit = make_reddit(
+            settings.reddit_client_id, settings.reddit_client_secret, settings.reddit_user_agent
+        )
+        posts = fetch_new_posts(
+            reddit, subreddits, settings.lookback_hours, settings.posts_per_subreddit
+        )
+
     logger.info("Fetched %d new posts across %d subreddits", len(posts), len(subreddits))
 
     flagged = judge_posts(settings.arbiter_repo, posts)

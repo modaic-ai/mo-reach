@@ -14,9 +14,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # user/org is configurable.
 ARBITER_REPO_NAME = "reddit-post-judge"
 
-# Which arbiter actions are worth surfacing in Slack.
-FLAGGED_ACTIONS = {"respond"}
-
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
@@ -29,9 +26,12 @@ class Settings(BaseSettings):
         description="Modaic API token (MODAIC_TOKEN); used by modaic_client to authenticate."
     )
 
-    # --- Reddit (read-only 'script' app) ---
-    reddit_client_id: str
-    reddit_client_secret: str
+    # --- Reddit ---
+    # Which fetcher to use: "api" (PRAW; needs the creds below) or "rss"
+    # (public Atom feeds; no creds required).
+    reddit_source: str = "api"
+    reddit_client_id: str = ""
+    reddit_client_secret: str = ""
     reddit_user_agent: str = "mo_buzz/0.1 (by Modaic)"
 
     # --- Slack ---
