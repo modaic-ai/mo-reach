@@ -17,17 +17,17 @@ decisions.
 
 ## Your job
 
-Given a post (subreddit, title, body, link), output a single `action`:
+Given a post (subreddit, title, body, link), output a single `relevance`:
 
-- **respond** — clearly relevant to Modaic AND a genuine, helpful, non-spammy
+- **relevant** — clearly about Modaic's space AND a genuine, helpful, non-spammy
   opening to reply. For example, someone asking how to evaluate or grade LLM
   outputs, get reliable confidence / uncertainty from an LLM, build an
   LLM-as-a-judge, calibrate a classifier, or route / triage with an LLM. A
   useful, authentic reply could naturally mention Modaic.
-- **ignore** — anything else: not relevant to Modaic, low quality, or merely
+- **not_relevant** — anything else: off-topic for Modaic, low quality, or merely
   topical with no real opening to reply (pure news, memes, hot takes,
   announcements), or somewhere a reply would be spammy or against the
   subreddit's norms.
 
-Be conservative: only choose **respond** when a reply would genuinely help the
-poster. When unsure, choose **ignore**.
+Be conservative: only choose **relevant** when a reply would genuinely help the
+poster. When unsure, choose **not_relevant**.

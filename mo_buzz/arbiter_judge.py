@@ -1,9 +1,9 @@
 """Run Reddit posts through the Modaic `reddit-post-judge` arbiter.
 
-Uses the batch predictions endpoint via `Arbiter.predict_all`: every post is
-ingested as a logged example and judged server-side in one job (so each post
-gets an `example_id` we can later annotate from Slack). Results are mapped back
-to their posts by the unique `link`.
+Uses the batch predictions endpoint via `Arbiter.predict_all` with confidence
+scoring enabled, then applies the surfacing policy (see policy.py) to decide
+which posts reach Slack. Each post becomes a logged example (annotatable later)
+and carries a calibrated confidence score.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from modaic_client import Arbiter
 
-from config import FLAGGED_ACTIONS
+from policy import get_policy, should_surface
 from reddit_client import RedditPost
 
 logger = logging.getLogger(__name__)
@@ -25,8 +25,9 @@ BATCH_SIZE = 1000
 @dataclass
 class JudgedPost:
     post: RedditPost
-    action: str | None
+    relevance: str | None
     reasoning: str
+    confidence: float | None
     example_id: str | None
     prediction_id: str | None
 
@@ -44,22 +45,24 @@ def _to_example(post: RedditPost) -> dict:
 
 
 def judge_posts(arbiter_repo: str, posts: list[RedditPost]) -> list[JudgedPost]:
-    """Batch-judge every post and return only those worth responding to."""
+    """Batch-judge every post (with confidence) and return those the policy surfaces."""
     if not posts:
         return []
 
     arbiter = Arbiter(arbiter_repo)
+    policy = get_policy()
     by_link = {post.url: post for post in posts}
-    flagged: list[JudgedPost] = []
+    surfaced: list[JudgedPost] = []
 
     for start in range(0, len(posts), BATCH_SIZE):
         chunk = posts[start : start + BATCH_SIZE]
         try:
-            # wait_for="predictions" (the default) blocks and returns a
-            # list[BatchExampleResult] once predictions are persisted.
+            # compute_confidence + wait_for="scores" blocks until calibrated
+            # confidence is available on every prediction.
             results = arbiter.predict_all(
                 examples=[_to_example(post) for post in chunk],
-                wait_for="predictions",
+                compute_confidence=True,
+                wait_for="scores",
                 show_progress=False,
             )
         except Exception:  # noqa: BLE001 - skip a failed chunk, keep the rest
@@ -74,16 +77,18 @@ def judge_posts(arbiter_repo: str, posts: list[RedditPost]) -> list[JudgedPost]:
             if post is None:
                 logger.warning("Unmatched batch result (example_id=%s)", result.example_id)
                 continue
-            action = getattr(pred.output, "action", None)
-            if action in FLAGGED_ACTIONS:
-                flagged.append(
+            relevance = getattr(pred.output, "relevance", None)
+            confidence = pred.confidence
+            if should_surface(relevance, confidence, policy):
+                surfaced.append(
                     JudgedPost(
                         post=post,
-                        action=action,
+                        relevance=relevance,
                         reasoning=pred.reasoning or "",
+                        confidence=confidence,
                         example_id=pred.example_id,
                         prediction_id=pred.prediction_id,
                     )
                 )
 
-    return flagged
+    return surfaced

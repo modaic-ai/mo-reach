@@ -1,0 +1,4 @@
+{
+  "relevant": { "mode": "all" },
+  "not_relevant": { "mode": "below", "threshold": 0.5 }
+}

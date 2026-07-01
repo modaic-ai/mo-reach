@@ -47,8 +47,8 @@ class RedditPostJudge(dspy.Signature):
         desc="The post body / selftext (may be empty for link-only posts)"
     )
     link: str = dspy.InputField(desc="URL of the Reddit post")
-    action: Literal["respond", "ignore"] = dspy.OutputField(
-        desc="Whether to respond to this post or ignore it"
+    relevance: Literal["relevant", "not_relevant"] = dspy.OutputField(
+        desc="Whether the post is relevant to the product and worth responding to"
     )
 
 
@@ -74,11 +74,12 @@ def main() -> None:
         lm=dspy.LM(model="together_ai/openai/gpt-oss-120b"),
     ).as_arbiter()  # MUST be called before push_to_hub to register as an arbiter
 
+    # No hardcoded tag: re-running this to update the rubric just pushes a new
+    # commit to main. Tag a release manually (e.g. tag="v1") when you want one.
     arbiter.push_to_hub(
         repo,
         private=True,
         commit_message="reddit-post-judge: instructions from product.md",
-        tag="v1",
     )
     print(f"Pushed arbiter to {repo}")
 
